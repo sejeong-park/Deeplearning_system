@@ -1,0 +1,314 @@
+{
+  "nbformat": 4,
+  "nbformat_minor": 0,
+  "metadata": {
+    "colab": {
+      "name": "Untitled22.ipynb",
+      "provenance": [],
+      "authorship_tag": "ABX9TyOYlj6QsgjMwQQH0ZCSI/dI",
+      "include_colab_link": true
+    },
+    "kernelspec": {
+      "name": "python3",
+      "display_name": "Python 3"
+    },
+    "language_info": {
+      "name": "python"
+    }
+  },
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "view-in-github",
+        "colab_type": "text"
+      },
+      "source": [
+        "<a href=\"https://colab.research.google.com/github/sejeong-park/Deeplearning_system/blob/main/ResNet%20MNIST%20try\" target=\"_parent\"><img src=\"https://colab.research.google.com/assets/colab-badge.svg\" alt=\"Open In Colab\"/></a>"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "7c_ojzc9yPkQ"
+      },
+      "source": [
+        "import tensorflow as tf\n",
+        "import numpy as np"
+      ],
+      "execution_count": 1,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "ZIfXnvfxyR69"
+      },
+      "source": [
+        "class ResidualUnit(tf.keras.Model):\n",
+        "  def __init__(self, filter_in, filter_out, kernel_size):\n",
+        "    super(ResidualUnit, self).__init__()\n",
+        "    # batch normalization -> ReLu -> Conv Layer\n",
+        "    # 여기서 ReLu 같은 경우는 변수가 없는 Layer이므로 여기서 굳이 initialize 해주지 않는다. (call쪽에서 사용하면 되므로)\n",
+        "\n",
+        "    self.bn1 = tf.keras.layers.BatchNormalization() #배치정규화\n",
+        "    self.conv1 = tf.keras.layers.Conv2D(filter_out, kernel_size, padding=\"same\") #Convolution진행\n",
+        "\n",
+        "    self.bn2 = tf.keras.layers.BatchNormalization() #배치정규화\n",
+        "    self.conv2 = tf.keras.layers.Conv2D(filter_out, kernel_size, padding=\"same\") #Convolution진행\n",
+        "\n",
+        "    # identity정의\n",
+        "    # X와 위의 과정을 통해 얻은 Feature map과 차원 고려\n",
+        "    # 위에서 filter_in과 filter_out이 같아야 한다는 의미\n",
+        "    # 하지만, 다를 수 있으므로 아래와 같은 작업을 거친다.\n",
+        "\n",
+        "    if filter_in == filter_out: #같은경우\n",
+        "      self.identity = lambda x: x\n",
+        "    else: #차원이 다른 경우\n",
+        "      self.identity = tf.keras.layers.Conv2D(filter_out, (1,1), padding=\"same\")\n",
+        "\n",
+        "  # 아래에서 batch normalization은 train할때와 inference할 때 사용하는 것이 달라지므로 옵션을 줄것이다.\n",
+        "  def call(self, x, training=False, mask=None):\n",
+        "    h = self.bn1(x, training=training)\n",
+        "    h = tf.nn.relu(h)\n",
+        "    h = self.conv1(h)\n",
+        "\n",
+        "    h = self.bn2(h, training=training)\n",
+        "    h = tf.nn.relu(h)\n",
+        "    h = self.conv2(h)\n",
+        "    return self.identity(x) + h"
+      ],
+      "execution_count": 2,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "mkMEEIzlyR4P"
+      },
+      "source": [
+        "\n",
+        "class ResnetLayer(tf.keras.Model):\n",
+        "  # 아래 arg 중 filter_in : 처음 입력되는 filter 개수를 의미\n",
+        "  # Resnet Layer는 Residual unit이 여러개가 있게끔해주는것이므로\n",
+        "  # filters : [32, 32, 32, 32]는 32에서 32로 Residual unit이 연결되는 형태\n",
+        "  def __init__(self, filter_in, filters, kernel_size):\n",
+        "    super(ResnetLayer, self).__init__()\n",
+        "    self.sequnce = list()\n",
+        "    # [16] + [32, 32, 32]\n",
+        "    # 아래는 list의 length가 더 작은 것을 기준으로 zip이 되어서 돌아가기 때문에\n",
+        "    # 앞의 list의 마지막 element 32는 무시된다.\n",
+        "    # zip([16, 32, 32, 32], [32, 32, 32])\n",
+        "    for f_in, f_out in zip([filter_in] + list(filters), filters):\n",
+        "      self.sequnce.append(ResidualUnit(f_in, f_out, kernel_size))\n",
+        "\n",
+        "  def call(self, x, training=False, mask=None):\n",
+        "    for unit in self.sequnce:\n",
+        "      # 위의 batch normalization에서 training이 쓰였기에 여기서 넘겨 주어야 한다.\n",
+        "      x = unit(x, training=training)\n",
+        "    return x"
+      ],
+      "execution_count": 3,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "oSFhGbvEyR1N"
+      },
+      "source": [
+        "class ResNet(tf.keras.Model):\n",
+        "  def __init__(self):\n",
+        "    super(ResNet, self).__init__()\n",
+        "    self.conv1 = tf.keras.layers.Conv2D(8, (3,3), padding=\"same\", activation=\"relu\") # 28X28X8\n",
+        "\n",
+        "    self.res1 = ResnetLayer(8, (16, 16), (3, 3)) # 28X28X16\n",
+        "    self.pool1 = tf.keras.layers.MaxPool2D((2,2)) # 14X14X16\n",
+        "\n",
+        "    self.res2 = ResnetLayer(16, (32, 32), (3, 3)) # 14X14X32\n",
+        "    self.pool2 = tf.keras.layers.MaxPool2D((2,2)) # 7X7X32\n",
+        "\n",
+        "    self.res3 = ResnetLayer(32, (64, 64), (3, 3)) # 7X7X64\n",
+        "\n",
+        "    self.flatten = tf.keras.layers.Flatten()\n",
+        "    self.dense1 = tf.keras.layers.Dense(128, activation=\"relu\")\n",
+        "    self.dense2 = tf.keras.layers.Dense(10, activation=\"softmax\")\n",
+        "\n",
+        "  def call(self, x, training=False, mask=None):\n",
+        "    x = self.conv1(x)\n",
+        "\n",
+        "    x = self.res1(x, training=training)\n",
+        "    x = self.pool1(x)\n",
+        "    x = self.res2(x, training=training)\n",
+        "    x = self.pool2(x)\n",
+        "    x = self.res3(x, training=training)\n",
+        "\n",
+        "    x = self.flatten(x)\n",
+        "    x = self.dense1(x)\n",
+        "    return self.dense2(x)"
+      ],
+      "execution_count": 4,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "AiR0lDpvyRy7"
+      },
+      "source": [
+        "# Implement training loop\n",
+        "@tf.function\n",
+        "def train_step(model, images, labels, loss_object, optimizer, train_loss, train_accuracy):\n",
+        "  with tf.GradientTape() as tape:\n",
+        "    # training=True 꼭 넣어주기!!\n",
+        "    predictions = model(images, training=True)\n",
+        "    loss = loss_object(labels, predictions)\n",
+        "  gradients = tape.gradient(loss, model.trainable_variables)\n",
+        "\n",
+        "  optimizer.apply_gradients(zip(gradients, model.trainable_variables))\n",
+        "  train_loss(loss)\n",
+        "  train_accuracy(labels, predictions)\n",
+        "\n",
+        "# Implement algorithm test\n",
+        "@tf.function\n",
+        "def test_step(model, images, labels, loss_object, test_loss, test_accuracy):\n",
+        "  # training=False 꼭 넣어주기!!\n",
+        "  predictions = model(images, training=False)\n",
+        "\n",
+        "  t_loss = loss_object(labels, predictions)\n",
+        "  test_loss(t_loss)\n",
+        "  test_accuracy(labels, predictions)"
+      ],
+      "execution_count": 5,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "aBj248BQyRvn",
+        "outputId": "0300a565-b73e-45f2-da36-796796b495fa"
+      },
+      "source": [
+        "mnist = tf.keras.datasets.mnist\n",
+        "\n",
+        "(x_train, y_train), (x_test, y_test) = mnist.load_data()\n",
+        "x_train, x_test = x_train / 255.0, x_test / 255.0\n",
+        "\n",
+        "x_train = x_train[..., tf.newaxis].astype(np.float32)\n",
+        "x_test = x_test[..., tf.newaxis].astype(np.float32)\n",
+        "\n",
+        "train_ds = tf.data.Dataset.from_tensor_slices((x_train, y_train)).shuffle(10000).batch(32)\n",
+        "test_ds = tf.data.Dataset.from_tensor_slices((x_test, y_test)).batch(32)"
+      ],
+      "execution_count": 6,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "text": [
+            "Downloading data from https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz\n",
+            "11493376/11490434 [==============================] - 0s 0us/step\n"
+          ],
+          "name": "stdout"
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "CtHeEZjCyRsz"
+      },
+      "source": [
+        "# 모델 생성\n",
+        "model = ResNet()\n",
+        "\n",
+        "# 손실함수 정의 및 최적화 기법 정의\n",
+        "loss_object = tf.keras.losses.SparseCategoricalCrossentropy()\n",
+        "optimizer = tf.keras.optimizers.Adam()\n",
+        "\n",
+        "# 평가지표 정의\n",
+        "train_loss = tf.keras.metrics.Mean(name='train_loss')\n",
+        "train_accuracy = tf.keras.metrics.SparseCategoricalAccuracy(name='train_accuracy')\n",
+        "\n",
+        "test_loss = tf.keras.metrics.Mean(name='test_loss')\n",
+        "test_accuracy = tf.keras.metrics.SparseCategoricalAccuracy(name='test_accuracy')"
+      ],
+      "execution_count": 7,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "GSOdivaQyRqE",
+        "outputId": "65e42076-01c4-4c8b-b15f-13866092025f"
+      },
+      "source": [
+        "EPOCHS = 10\n",
+        "\n",
+        "train_acc=[]\n",
+        "test_acc=[]\n",
+        "for epoch in range(EPOCHS):\n",
+        "  for images, labels in train_ds:\n",
+        "    train_step(model, images, labels, loss_object, optimizer, train_loss, train_accuracy)\n",
+        "\n",
+        "  for test_images, test_labels in test_ds:\n",
+        "    test_step(model, test_images, test_labels, loss_object, test_loss, test_accuracy)\n",
+        "\n",
+        "\n",
+        "\n",
+        "  template = \"Epoch {}, Loss: {}, Accuracy: {}, Test Loss: {}, Test Accuracy: {}\"\n",
+        "  print(template.format(epoch+1,\n",
+        "                        train_loss.result(),\n",
+        "                        train_accuracy.result() * 100,\n",
+        "                        test_loss.result(),\n",
+        "                        test_accuracy.result() * 100))"
+      ],
+      "execution_count": 8,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "text": [
+            "Epoch 1, Loss: 0.1461799442768097, Accuracy: 95.98833465576172, Test Loss: 0.08525798469781876, Test Accuracy: 97.52999877929688\n",
+            "Epoch 2, Loss: 0.10733086615800858, Accuracy: 97.03582763671875, Test Loss: 0.08287695795297623, Test Accuracy: 97.59500122070312\n",
+            "Epoch 3, Loss: 0.08796156942844391, Accuracy: 97.55055236816406, Test Loss: 0.06880419701337814, Test Accuracy: 97.97333526611328\n",
+            "Epoch 4, Loss: 0.075904980301857, Accuracy: 97.8808364868164, Test Loss: 0.06502582877874374, Test Accuracy: 98.0875015258789\n",
+            "Epoch 5, Loss: 0.06848682463169098, Accuracy: 98.08566284179688, Test Loss: 0.05759193003177643, Test Accuracy: 98.29000091552734\n",
+            "Epoch 6, Loss: 0.06201203912496567, Accuracy: 98.2602767944336, Test Loss: 0.053216852247714996, Test Accuracy: 98.42333221435547\n",
+            "Epoch 7, Loss: 0.05665163695812225, Accuracy: 98.41381072998047, Test Loss: 0.051265474408864975, Test Accuracy: 98.51428985595703\n",
+            "Epoch 8, Loss: 0.052683982998132706, Accuracy: 98.51979064941406, Test Loss: 0.058412905782461166, Test Accuracy: 98.42874908447266\n",
+            "Epoch 9, Loss: 0.049316469579935074, Accuracy: 98.61333465576172, Test Loss: 0.05651145428419113, Test Accuracy: 98.50222778320312\n",
+            "Epoch 10, Loss: 0.046159446239471436, Accuracy: 98.7020034790039, Test Loss: 0.05426747724413872, Test Accuracy: 98.55999755859375\n"
+          ],
+          "name": "stdout"
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "WI4AJB1myiW1"
+      },
+      "source": [
+        ""
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "Her0Y3WkyiNJ"
+      },
+      "source": [
+        ""
+      ],
+      "execution_count": null,
+      "outputs": []
+    }
+  ]
+}
